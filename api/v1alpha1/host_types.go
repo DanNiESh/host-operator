@@ -26,6 +26,9 @@ import (
 
 // HostSpec defines the desired state of Host.
 type HostSpec struct {
+	// NodeID is the Ironic node UUID (or name) this Host represents. Required for power management.
+	// +kubebuilder:validation:Required
+	NodeID string `json:"nodeID"`
 	// NetworkConfig specifies host networking (e.g. which network/VLAN to attach).
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
 	// Online is the desired power state (true = on, false = off).
@@ -53,10 +56,10 @@ type Image struct {
 type ProvisioningState string
 
 const (
-	StateUnmanaged    ProvisioningState = "unmanaged"
-	StateAvailable ProvisioningState = "available"
-	StateProvisioning ProvisioningState = "provisioning"
-	StateProvisioned  ProvisioningState = "provisioned"
+	StateUnmanaged      ProvisioningState = "unmanaged"
+	StateAvailable      ProvisioningState = "available"
+	StateProvisioning   ProvisioningState = "provisioning"
+	StateProvisioned    ProvisioningState = "provisioned"
 	StateDeprovisioning ProvisioningState = "deprovisioning"
 )
 

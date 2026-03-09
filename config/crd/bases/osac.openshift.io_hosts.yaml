@@ -105,11 +105,16 @@ spec:
                 required:
                 - network
                 type: object
+              nodeID:
+                description: NodeID is the Ironic node UUID (or name) this Host represents.
+                  Required for power management.
+                type: string
               online:
                 description: Online is the desired power state (true = on, false =
                   off).
                 type: boolean
             required:
+            - nodeID
             - online
             type: object
           status:

@@ -6,4 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: host-sample
 spec:
-  # TODO(user): Add fields here
+  # Ironic node UUID (or name) this Host represents
+  nodeID: "758ddf40-69a9-460b-86b2-2ea876d33d5b"
+  # Desired power state: true = power on, false = power off
+  online: false

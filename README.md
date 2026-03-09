@@ -4,6 +4,26 @@
 ## Description
 // TODO(user): An in-depth paragraph about your project and overview of use
 
+## Test locally (with Ironic)
+
+Run the host controller on the machine and point it at your Ironic API. You need a Kubernetes API (e.g. a `kind` cluster) so the controller can watch Host CRs; the controller runs locally and talks to Ironic from your local machine.
+
+### 1. Set Ironic URL and token
+
+
+```bash
+export IRONIC_URL="https://ironic-url"
+export OSAC_AUTH_TOKEN="token" # e.g. openstack token issue -f value -c id
+```
+
+### 2. Run the controller
+
+```bash
+make run
+```
+
+The controller will use `IRONIC_URL` and `OSAC_AUTH_TOKEN` to connect to Ironic. Ensure `KUBECONFIG` points at a cluster where you can create Host CRs (e.g. `make install` then apply a sample Host from `config/samples/v1alpha1_host.yaml`).
+
 ## Getting Started
 
 ### Prerequisites

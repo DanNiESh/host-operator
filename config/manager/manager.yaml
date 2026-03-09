@@ -83,6 +83,17 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
+        # Ironic (Bare Metal) API connection for host management operations.
+        # Required for Host reconciliation; omit to run without Ironic.
+        env:
+          - name: IRONIC_URL
+            value: "https://esi.massopen.cloud:13385"
+          - name: OSAC_AUTH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: ironic-credentials
+                key: token
+                optional: true
         # TODO(user): Configure the resources accordingly based on the project requirements.
         # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
         resources:
