@@ -8,5 +8,9 @@ metadata:
 spec:
   # Ironic node UUID (or name) this Host represents
   nodeID: "758ddf40-69a9-460b-86b2-2ea876d33d5b"
+  # Controller or system that manages this host (immutable)
+  managedBy: "baremetal-cluster"
+  # Class/capability tier of the host (immutable)
+  hostClass: "default"
   # Desired power state: true = power on, false = power off
   online: false

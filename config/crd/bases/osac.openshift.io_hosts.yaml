@@ -83,6 +83,12 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              hostClass:
+                description: HostClass is the class/capability tier of the host.
+                type: string
+                x-kubernetes-validations:
+                - message: field is immutable
+                  rule: self == oldSelf
               image:
                 description: Image to provision; when set, triggers provisioning.
                   When cleared, triggers deprovisioning.
@@ -94,6 +100,13 @@ spec:
                 required:
                 - url
                 type: object
+              managedBy:
+                description: ManagedBy identifies the controller or system that manages
+                  this host.
+                type: string
+                x-kubernetes-validations:
+                - message: field is immutable
+                  rule: self == oldSelf
               networkConfig:
                 description: NetworkConfig specifies host networking (e.g. which network/VLAN
                   to attach).
@@ -114,6 +127,8 @@ spec:
                   off).
                 type: boolean
             required:
+            - hostClass
+            - managedBy
             - nodeID
             - online
             type: object

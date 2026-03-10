@@ -29,6 +29,14 @@ type HostSpec struct {
 	// NodeID is the Ironic node UUID (or name) this Host represents. Required for power management.
 	// +kubebuilder:validation:Required
 	NodeID string `json:"nodeID"`
+	// ManagedBy identifies the controller or system that manages this host.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
+	ManagedBy string `json:"managedBy"`
+	// HostClass is the class/capability tier of the host.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
+	HostClass string `json:"hostClass"`
 	// NetworkConfig specifies host networking (e.g. which network/VLAN to attach).
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
 	// Online is the desired power state (true = on, false = off).
