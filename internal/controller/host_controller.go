@@ -18,30 +18,31 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
+	"github.com/gophercloud/gophercloud/v2/openstack/baremetal/v1/nodes"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	osacopenshiftiov1alpha1 "github.com/DanNiESh/host-operator/api/v1alpha1"
-	"github.com/DanNiESh/host-operator/internal/inventory"
+	"github.com/DanNiESh/host-operator/pkg/ironic"
 )
 
 // HostReconciler reconciles a Host object
 type HostReconciler struct {
 	client.Client
-	Scheme          *runtime.Scheme
-	InventoryClient *inventory.Client
+	Scheme       *runtime.Scheme
+	IronicClient *ironic.Client
 }
 
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=hosts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=hosts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=hosts/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
 func (r *HostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -55,60 +56,111 @@ func (r *HostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	if r.InventoryClient == nil {
-		log.Info("No inventory client configured, skipping power management")
+	if r.IronicClient == nil {
+		log.Info("No Ironic client configured")
 		return ctrl.Result{}, nil
 	}
-	// Some testing here to see if it can reach the inventory service
-	if err := r.InventoryClient.CheckConnectivity(ctx); err != nil {
-		log.Error(err, "Cannot connect to Ironic service")
-		// Update status to reflect connection failure if we add a condition
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
 
-	// Get current node state from Ironic
-	node, err := r.InventoryClient.GetNode(ctx, host.Spec.NodeID)
+	node, err := r.IronicClient.GetNode(ctx, host.Spec.NodeID)
 	if err != nil {
 		log.Error(err, "Failed to get node from Ironic")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
+	log.V(1).Info("Got node from Ironic", "nodeID", host.Spec.NodeID, "power_state", node.PowerState, "provision_state", node.ProvisionState)
 
-	// Update status from Ironic (power state and provisioning state)
+	isoURL := r.liveISOURL(host)
+	wantProvision := isoURL != ""
+
+	if wantProvision {
+		if err := r.IronicClient.ProvisionWithISO(ctx, host.Spec.NodeID, isoURL); err != nil {
+			switch {
+			case errors.Is(err, ironic.ErrNodeNotAvailable):
+				log.Info("Node not ready for provisioning yet", "reason", err.Error())
+			case errors.Is(err, ironic.ErrValidationFailed):
+				log.Error(err, "Ironic validation failed before deploy")
+			default:
+				log.Error(err, "ProvisionWithISO failed")
+			}
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		node, err = r.IronicClient.GetNode(ctx, host.Spec.NodeID)
+		if err != nil {
+			log.Error(err, "Failed to refresh node after provision step")
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		}
+	}
+
+	if !wantProvision && ironic.CanDeprovision(node) {
+		if err := r.IronicClient.ChangeProvisionState(ctx, host.Spec.NodeID, nodes.ProvisionStateOpts{
+			Target: nodes.TargetDeleted,
+		}); err != nil {
+			log.Error(err, "Failed to start deprovision")
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		node, err = r.IronicClient.GetNode(ctx, host.Spec.NodeID)
+		if err != nil {
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		}
+	}
+
+	if err := r.syncHostStatus(ctx, host, node); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if ironic.IsProvisioning(node) {
+		return ctrl.Result{RequeueAfter: ironic.DefaultPollInterval}, nil
+	}
+	if ironic.IsDeployFailed(node) {
+		log.Info("Ironic reports deploy failed", "nodeID", host.Spec.NodeID, "provision_state", node.ProvisionState)
+	}
+
+	if !ironic.IsProvisioning(node) {
+		desiredOn := host.Spec.Online
+		poweredOn := powerStateToBool(node.PowerState)
+		if desiredOn != poweredOn {
+			target := "off"
+			if desiredOn {
+				target = "on"
+			}
+			if err := r.IronicClient.SetPowerState(ctx, host.Spec.NodeID, target); err != nil {
+				log.Error(err, "Failed to set power state", "target", target)
+				return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+			}
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+	}
+
+	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+}
+
+func (r *HostReconciler) syncHostStatus(ctx context.Context, host *osacopenshiftiov1alpha1.Host, node *nodes.Node) error {
 	poweredOn := powerStateToBool(node.PowerState)
 	host.Status.PoweredOn = &poweredOn
 	if host.Status.Provisioning.ID == "" {
 		host.Status.Provisioning.ID = node.UUID
 	}
 	host.Status.Provisioning.State = osacopenshiftiov1alpha1.ProvisioningState(node.ProvisionState)
-	if err := r.Status().Update(ctx, host); err != nil {
-		return ctrl.Result{}, err
+	if u := r.liveISOURL(host); u != "" {
+		host.Status.Provisioning.Image = osacopenshiftiov1alpha1.Image{URL: u, Format: "live-iso"}
 	}
-
-	// If desired power (spec.Online) differs from current, set power state
-	desiredOn := host.Spec.Online
-	if desiredOn != poweredOn {
-		target := "off"
-		if desiredOn {
-			target = "on"
-		}
-		if err := r.InventoryClient.SetPowerState(ctx, host.Spec.NodeID, target); err != nil {
-			log.Error(err, "Failed to set power state", "target", target)
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-		}
-		// Requeue to refresh status after power transition
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	}
-
-	// No change needed; requeue periodically to refresh status
-	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+	return r.Status().Update(ctx, host)
 }
 
-// powerStateToBool maps Ironic power_state string to bool. "power on" -> true, else false.
+func (r *HostReconciler) liveISOURL(host *osacopenshiftiov1alpha1.Host) string {
+	if host.Spec.Image == nil {
+		return ""
+	}
+	u := strings.TrimSpace(host.Spec.Image.URL)
+	if u == "" {
+		return ""
+	}
+	return u
+}
+
 func powerStateToBool(powerState string) bool {
 	return powerState == "power on"
 }
 
-// SetupWithManager sets up the controller with the Manager.
 func (r *HostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&osacopenshiftiov1alpha1.Host{}).

@@ -55,8 +55,11 @@ type NetworkConfig struct {
 
 // Image holds the image to provision.
 type Image struct {
-	URL    string `json:"url"`
-	Format string `json:"format,omitempty"` // e.g. live-iso, raw, qcow2
+	// URL of the live ISO.
+	URL string `json:"url,omitempty"`
+	// Format must be live-iso (default).
+	// +kubebuilder:default:=live-iso
+	Format string `json:"format,omitempty"`
 }
 
 // ProvisioningState defines the states the provisioner will report

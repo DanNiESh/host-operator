@@ -22,7 +22,7 @@ export OSAC_AUTH_TOKEN="token" # e.g. openstack token issue -f value -c id
 make run
 ```
 
-The controller will use `IRONIC_URL` and `OSAC_AUTH_TOKEN` to connect to Ironic. Ensure `KUBECONFIG` points at a cluster where you can create Host CRs (e.g. `make install` then apply a sample Host from `config/samples/v1alpha1_host.yaml`).
+The controller will use `IRONIC_URL` and `OSAC_AUTH_TOKEN` to connect to Ironic. Ensure `KUBECONFIG` points at a cluster where you can create Host CRs (e.g. `make install` then apply a sample Host from `config/samples`).
 
 ## Getting Started
 

@@ -19,7 +19,6 @@ package main
 import (
 	"crypto/tls"
 	"flag"
-	"net/url"
 	"os"
 	"path/filepath"
 
@@ -40,7 +39,7 @@ import (
 
 	osacopenshiftiov1alpha1 "github.com/DanNiESh/host-operator/api/v1alpha1"
 	"github.com/DanNiESh/host-operator/internal/controller"
-	"github.com/DanNiESh/host-operator/internal/inventory"
+	"github.com/DanNiESh/host-operator/pkg/ironic"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -204,33 +203,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Inventory client for bare metal management
-	var inventoryClient *inventory.Client
+	// Ironic client for bare metal management
+	var ironicClient *ironic.Client
 	if ironicURLStr := os.Getenv("IRONIC_URL"); ironicURLStr != "" {
-		ironicURL, err := url.Parse(ironicURLStr)
-		if err != nil {
-			setupLog.Error(err, "IRONIC_URL is not a valid URL")
-			os.Exit(1)
-		}
-		if ironicURL.Scheme != "http" && ironicURL.Scheme != "https" {
-			setupLog.Error(nil, "IRONIC_URL must use http or https")
-			os.Exit(1)
-		}
 		authToken := os.Getenv("OSAC_AUTH_TOKEN")
 		if authToken == "" {
 			setupLog.Error(nil, "OSAC_AUTH_TOKEN required when IRONIC_URL is set")
 			os.Exit(1)
 		}
-		inventoryClient = inventory.NewClient(nil, ironicURL, authToken)
-		setupLog.Info("Inventory (Ironic) client configured", "url", ironicURLStr)
+		opts := ironic.ClientOptions{InsecureSkipVerify: os.Getenv("IRONIC_INSECURE") == "true"}
+		var err error
+		ironicClient, err = ironic.NewClientWithToken(ironicURLStr, authToken, opts)
+		if err != nil {
+			setupLog.Error(err, "failed to create Ironic client")
+			os.Exit(1)
+		}
+		setupLog.Info("Ironic client configured", "url", ironicURLStr)
 	} else {
 		setupLog.Info("IRONIC_URL not set")
 	}
 
 	if err := (&controller.HostReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		InventoryClient: inventoryClient,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		IronicClient: ironicClient,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Host")
 		os.Exit(1)

@@ -94,11 +94,12 @@ spec:
                   When cleared, triggers deprovisioning.
                 properties:
                   format:
+                    default: live-iso
+                    description: Format must be live-iso (default).
                     type: string
                   url:
+                    description: URL of the live ISO.
                     type: string
-                required:
-                - url
                 type: object
               managedBy:
                 description: ManagedBy identifies the controller or system that manages
@@ -149,11 +150,12 @@ spec:
                     description: Image is the currently provisioned image (if any).
                     properties:
                       format:
+                        default: live-iso
+                        description: Format must be live-iso (default).
                         type: string
                       url:
+                        description: URL of the live ISO.
                         type: string
-                    required:
-                    - url
                     type: object
                   state:
                     description: State is the current provisioning state.

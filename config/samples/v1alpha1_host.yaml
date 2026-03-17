@@ -7,7 +7,7 @@ metadata:
   name: host-sample
 spec:
   # Ironic node UUID (or name) this Host represents
-  nodeID: "758ddf40-69a9-460b-86b2-2ea876d33d5b"
+  nodeID: "519d6b37-13a9-444c-9a2a-bcac8a33dc44"
   # Controller or system that manages this host (immutable)
   managedBy: "baremetal-cluster"
   # Class/capability tier of the host (immutable)
