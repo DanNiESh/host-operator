@@ -27,11 +27,7 @@ spec:
     - macAddress: aa:bb:cc:dd:ee:f1
       network: private-vlan-network
   provisioning:
-    url: ${IMAGE_URL}
-    state: active
-    provisioningNetwork: private-vlan-network
-# status below is NOT applied by kubectl apply. For local testing, patch status:
-# kubectl patch host host-54321 -n osac-namespace --subresource=status --type=merge -p '{"status":{"id":"519d6b37-13a9-444c-9a2a-bcac8a33dc44","hostManagementClass":"openstack"}}'
+    state: available
 status:
   setUpWorkflowOutput:
     example: some-value
