@@ -32,7 +32,11 @@ import (
 	"github.com/DanNiESh/host-operator/pkg/ironic"
 )
 
-const hostManagementClass = "openstack"
+const (
+	hostManagementClass = "openstack"
+	// hostRequeueInterval is used for periodic reconciles (sync status / observe Ironic).
+	hostRequeueInterval = 30 * time.Second
+)
 
 // HostReconciler reconciles Host CRs.
 type HostReconciler struct {
@@ -63,15 +67,8 @@ func (r *HostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	var res ctrl.Result
 
-	desiredProv := desiredProvisioningState(host)
-	if desiredProv != osacopenshiftiov1alpha1.ProvisioningStateAvailable &&
-		desiredProv != osacopenshiftiov1alpha1.ProvisioningStateActive {
-		log.V(1).Info("Host skipped", "reason", "spec.provisioning.state not active or available", "state", desiredProv)
-		return ctrl.Result{}, nil
-	}
-
-	// Align power with desired provisioning: available: off, active: on.
-	node, res = r.reconcilePower(ctx, host, node, desiredProv, log)
+	// Align Ironic power with spec.online (true - on, false - off).
+	node, res = r.reconcilePower(ctx, host, node, log)
 	if !res.IsZero() {
 		if err := r.syncHostStatus(ctx, host, node); err != nil {
 			return ctrl.Result{}, err
@@ -82,13 +79,12 @@ func (r *HostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	node, err := r.IronicClient.GetNode(ctx, host.Status.ID)
 	if err != nil {
 		log.Error(err, "reconcile failed: refresh node before sync")
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
 	}
 
 	if err := r.syncHostStatus(ctx, host, node); err != nil {
 		return ctrl.Result{}, err
 	}
-	// Requeue the host if the node is still provisioning or deploy_failed.
 	return r.reconcileRequeue(host, node, log)
 }
 
@@ -137,56 +133,46 @@ func (r *HostReconciler) syncHostStatus(ctx context.Context, host *osacopenshift
 	return r.Status().Update(ctx, host)
 }
 
-func desiredProvisioningState(host *osacopenshiftiov1alpha1.Host) string {
-	if host.Spec.Provisioning == nil {
-		return ""
-	}
-	return strings.ToLower(strings.TrimSpace(host.Spec.Provisioning.State))
-}
-
 func (r *HostReconciler) reconcileRequeue(host *osacopenshiftiov1alpha1.Host, node *nodes.Node, log logr.Logger) (ctrl.Result, error) {
 	if ironic.IsProvisioning(node) {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
 	}
 	if ironic.IsDeployFailed(node) {
 		log.Info("Ironic deploy failed", "nodeID", host.Status.ID, "provision_state", node.ProvisionState)
 	}
-	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
 }
 
-// reconcilePower sets Ironic power off when desired provisioning is available, on when active.
-func (r *HostReconciler) reconcilePower(ctx context.Context, host *osacopenshiftiov1alpha1.Host, node *nodes.Node, desiredProv string, log logr.Logger) (*nodes.Node, ctrl.Result) {
+// reconcilePower sets Ironic power from spec.online (true: on, false: off).
+func (r *HostReconciler) reconcilePower(ctx context.Context, host *osacopenshiftiov1alpha1.Host, node *nodes.Node, log logr.Logger) (*nodes.Node, ctrl.Result) {
 	if r.IronicClient == nil {
 		return node, ctrl.Result{}
 	}
 	id := host.Status.ID
 	ps := strings.ToLower(strings.TrimSpace(node.PowerState))
-	switch desiredProv {
-	case osacopenshiftiov1alpha1.ProvisioningStateAvailable:
-		if ps == "power off" {
-			return node, ctrl.Result{}
-		}
-		log.Info("reconcile power: off for deprovisioning", "nodeID", id, "power_state", node.PowerState)
-		if err := r.IronicClient.SetPowerState(ctx, id, "off"); err != nil {
-			log.Error(err, "reconcile power: SetPowerState off failed")
-			return node, ctrl.Result{RequeueAfter: 15 * time.Second}
-		}
-	case osacopenshiftiov1alpha1.ProvisioningStateActive:
+	if host.Spec.Online {
 		if ps == "power on" {
 			return node, ctrl.Result{}
 		}
-		log.Info("reconcile power: on for provisioning", "nodeID", id, "power_state", node.PowerState)
+		log.Info("reconcile power: on", "nodeID", id, "power_state", node.PowerState)
 		if err := r.IronicClient.SetPowerState(ctx, id, "on"); err != nil {
 			log.Error(err, "reconcile power: SetPowerState on failed")
-			return node, ctrl.Result{RequeueAfter: 15 * time.Second}
+			return node, ctrl.Result{RequeueAfter: hostRequeueInterval}
 		}
-	default:
-		return node, ctrl.Result{}
+	} else {
+		if ps == "power off" {
+			return node, ctrl.Result{}
+		}
+		log.Info("reconcile power: off", "nodeID", id, "power_state", node.PowerState)
+		if err := r.IronicClient.SetPowerState(ctx, id, "off"); err != nil {
+			log.Error(err, "reconcile power: SetPowerState off failed")
+			return node, ctrl.Result{RequeueAfter: hostRequeueInterval}
+		}
 	}
 	n, err := r.IronicClient.GetNode(ctx, id)
 	if err != nil {
 		log.Error(err, "reconcile power: refresh node after power change failed")
-		return node, ctrl.Result{RequeueAfter: 15 * time.Second}
+		return node, ctrl.Result{RequeueAfter: hostRequeueInterval}
 	}
 	return n, ctrl.Result{}
 }
