@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
@@ -63,7 +62,6 @@ func (r *HostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	var res ctrl.Result
-	var err error
 
 	desiredProv := desiredProvisioningState(host)
 	if desiredProv != osacopenshiftiov1alpha1.ProvisioningStateAvailable &&
@@ -71,41 +69,20 @@ func (r *HostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		log.V(1).Info("Host skipped", "reason", "spec.provisioning.state not active or available", "state", desiredProv)
 		return ctrl.Result{}, nil
 	}
-	// If the desired provisioning state is available, reconcile the host to be available.
-	if desiredProv == osacopenshiftiov1alpha1.ProvisioningStateAvailable {
-		res = r.reconcileDesiredAvailable(ctx, node, host.Status.ID, log)
-		node, err = r.IronicClient.GetNode(ctx, host.Status.ID)
-		if err != nil {
-			if !res.IsZero() {
-				return res, nil
-			}
-			log.Error(err, "reconcile failed: refresh node after moving toward available")
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+
+	// Align power with desired provisioning: available: off, active: on.
+	node, res = r.reconcilePower(ctx, host, node, desiredProv, log)
+	if !res.IsZero() {
+		if err := r.syncHostStatus(ctx, host, node); err != nil {
+			return ctrl.Result{}, err
 		}
-		if !res.IsZero() {
-			if err := r.syncHostStatus(ctx, host, node); err != nil {
-				return ctrl.Result{}, err
-			}
-			return res, nil
-		}
+		return res, nil
 	}
-	// If the desired provisioning state is active, reconcile the host to be active.
-	if desiredProv == osacopenshiftiov1alpha1.ProvisioningStateActive {
-		res = r.reconcileDesiredActive(ctx, host, node, log)
-		node, err = r.IronicClient.GetNode(ctx, host.Status.ID)
-		if err != nil {
-			if !res.IsZero() {
-				return res, nil
-			}
-			log.Error(err, "reconcile failed: refresh node after moving toward active")
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-		}
-		if !res.IsZero() {
-			if err := r.syncHostStatus(ctx, host, node); err != nil {
-				return ctrl.Result{}, err
-			}
-			return res, nil
-		}
+
+	node, err := r.IronicClient.GetNode(ctx, host.Status.ID)
+	if err != nil {
+		log.Error(err, "reconcile failed: refresh node before sync")
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
 	if err := r.syncHostStatus(ctx, host, node); err != nil {
@@ -177,68 +154,41 @@ func (r *HostReconciler) reconcileRequeue(host *osacopenshiftiov1alpha1.Host, no
 	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 }
 
-func (r *HostReconciler) reconcileDesiredAvailable(ctx context.Context, node *nodes.Node, nodeID string, log logr.Logger) ctrl.Result {
-	ps := nodes.ProvisionState(node.ProvisionState)
-
-	if ps == nodes.Available {
-		log.Info("Node is available, skipping reconciliation")
-		return ctrl.Result{}
+// reconcilePower sets Ironic power off when desired provisioning is available, on when active.
+func (r *HostReconciler) reconcilePower(ctx context.Context, host *osacopenshiftiov1alpha1.Host, node *nodes.Node, desiredProv string, log logr.Logger) (*nodes.Node, ctrl.Result) {
+	if r.IronicClient == nil {
+		return node, ctrl.Result{}
 	}
-
-	if ps == nodes.Manageable {
-		// Move the node from manageable to available state.
-		if err := r.IronicClient.ChangeProvisionState(ctx, nodeID, nodes.ProvisionStateOpts{Target: nodes.TargetProvide}); err != nil {
-			log.Error(err, "reconcile available failed", "reason", "TargetProvide failed")
-			return ctrl.Result{RequeueAfter: 15 * time.Second}
+	id := host.Status.ID
+	ps := strings.ToLower(strings.TrimSpace(node.PowerState))
+	switch desiredProv {
+	case osacopenshiftiov1alpha1.ProvisioningStateAvailable:
+		if ps == "power off" {
+			return node, ctrl.Result{}
 		}
-		return ctrl.Result{RequeueAfter: 15 * time.Second}
-	}
-
-	if ironic.CanDeprovision(node) {
-		// Move the node from active to available state.
-		if err := r.IronicClient.ChangeProvisionState(ctx, nodeID, nodes.ProvisionStateOpts{
-			Target: nodes.TargetDeleted,
-		}); err != nil {
-			log.Error(err, "reconcile available failed", "reason", "TargetDeleted failed")
-			return ctrl.Result{RequeueAfter: 15 * time.Second}
+		log.Info("reconcile power: off for deprovisioning", "nodeID", id, "power_state", node.PowerState)
+		if err := r.IronicClient.SetPowerState(ctx, id, "off"); err != nil {
+			log.Error(err, "reconcile power: SetPowerState off failed")
+			return node, ctrl.Result{RequeueAfter: 15 * time.Second}
 		}
-		return ctrl.Result{RequeueAfter: 15 * time.Second}
-	}
-
-	if ironic.IsProvisioning(node) {
-		log.V(1).Info("Waiting for node toward available", "provision_state", node.ProvisionState)
-		return ctrl.Result{RequeueAfter: 15 * time.Second}
-	}
-
-	return ctrl.Result{}
-}
-
-func (r *HostReconciler) reconcileDesiredActive(ctx context.Context, host *osacopenshiftiov1alpha1.Host, node *nodes.Node, log logr.Logger) ctrl.Result {
-	p := host.Spec.Provisioning
-	isoURL := strings.TrimSpace(p.URL)
-	if isoURL == "" || strings.TrimSpace(p.ProvisioningNetwork) == "" {
-		return ctrl.Result{}
-	}
-	if ironic.IsProvisioning(node) {
-		log.Info("Node is already deploying")
-		return ctrl.Result{}
-	}
-	if ironic.IsProvisioned(node) {
-		log.Info("Node is already deployed")
-		return ctrl.Result{}
-	}
-	if err := r.IronicClient.ProvisionWithISO(ctx, host.Status.ID, isoURL); err != nil {
-		switch {
-		case errors.Is(err, ironic.ErrNodeNotAvailable):
-			log.Info("Provision deferred", "reason", err.Error())
-		case errors.Is(err, ironic.ErrValidationFailed):
-			log.Error(err, "Ironic validation failed before deploy")
-		default:
-			log.Error(err, "ProvisionWithISO failed")
+	case osacopenshiftiov1alpha1.ProvisioningStateActive:
+		if ps == "power on" {
+			return node, ctrl.Result{}
 		}
-		return ctrl.Result{RequeueAfter: 30 * time.Second}
+		log.Info("reconcile power: on for provisioning", "nodeID", id, "power_state", node.PowerState)
+		if err := r.IronicClient.SetPowerState(ctx, id, "on"); err != nil {
+			log.Error(err, "reconcile power: SetPowerState on failed")
+			return node, ctrl.Result{RequeueAfter: 15 * time.Second}
+		}
+	default:
+		return node, ctrl.Result{}
 	}
-	return ctrl.Result{}
+	n, err := r.IronicClient.GetNode(ctx, id)
+	if err != nil {
+		log.Error(err, "reconcile power: refresh node after power change failed")
+		return node, ctrl.Result{RequeueAfter: 15 * time.Second}
+	}
+	return n, ctrl.Result{}
 }
 
 func powerStateToBool(powerState string) bool {
